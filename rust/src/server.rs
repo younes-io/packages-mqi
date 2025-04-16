@@ -3,6 +3,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::io::{BufRead, BufReader};
 use std::thread;
+use std::io;
 use log::{
     debug, error, info, trace, warn
 };

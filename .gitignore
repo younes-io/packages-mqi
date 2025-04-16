@@ -6,3 +6,6 @@ __pycache__
 env/
 dist/
 swiplserver.egg-info/
+rust/target/
+rust/Cargo.lock
+

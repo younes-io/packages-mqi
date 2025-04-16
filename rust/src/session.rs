@@ -1,10 +1,9 @@
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpStream};
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use log::{debug, error, trace, warn};
+use log::{debug, error, trace, warn, info};
 use serde_json::Value;
 
 use crate::error::PrologError;
@@ -91,10 +90,10 @@ impl PrologSession {
         };
 
         // Send password immediately
-        send_message(&mut *stream, password)?;
+        send_message(stream.as_mut(), password)?;
 
         // Receive initial response
-        let response_str = receive_message(&mut *stream)?;
+        let response_str = receive_message(stream.as_mut())?;
         let response_json: Value = serde_json::from_str(&response_str)?; // Handle potential trailing newline from term_to_json_string
 
         debug!("Initial response: {}", response_json);
@@ -179,7 +178,7 @@ impl PrologSession {
         let goal = goal.trim().trim_end_matches('.');
         let timeout_str = timeout_seconds.map_or_else(|| "_".to_string(), |t| t.to_string());
         let command = format!("run(({}), {}).", goal, timeout_str);
-        send_message(&mut *self.stream, &command)?;
+        send_message(self.stream.as_mut(), &command)?;
         self.handle_response()
     }
 
@@ -189,7 +188,7 @@ impl PrologSession {
          let timeout_str = timeout_seconds.map_or_else(|| "_".to_string(), |t| t.to_string());
          let find_all_str = if find_all { "true" } else { "false" };
          let command = format!("run_async(({}), {}, {}).", goal, timeout_str, find_all_str);
-         send_message(&mut *self.stream, &command)?;
+         send_message(self.stream.as_mut(), &command)?;
          match self.handle_response()? {
              // Expect simple true acknowledgment
              QueryResult::Success(true) => Ok(()),
@@ -201,7 +200,7 @@ impl PrologSession {
     pub fn query_async_result(&mut self, wait_timeout_seconds: Option<f64>) -> Result<Option<QueryResult>, PrologError> {
         let timeout_str = wait_timeout_seconds.map_or_else(|| "-1".to_string(), |t| t.to_string());
         let command = format!("async_result({}).", timeout_str);
-        send_message(&mut *self.stream, &command)?;
+        send_message(self.stream.as_mut(), &command)?;
         match self.handle_response() {
             Ok(result) => Ok(Some(result)),
             Err(PrologError::PrologException{ kind, .. }) if kind == "no_more_results" => Ok(None),
@@ -212,7 +211,7 @@ impl PrologSession {
     /// Attempts to cancel the currently running asynchronous query.
     pub fn cancel_async(&mut self) -> Result<(), PrologError> {
         let command = "cancel_async.";
-        send_message(&mut *self.stream, command)?;
+        send_message(self.stream.as_mut(), command)?;
          match self.handle_response()? {
              QueryResult::Success(true) => Ok(()),
              _ => Err(PrologError::InvalidState("Unexpected response from cancel_async".to_string())),
@@ -223,7 +222,7 @@ impl PrologSession {
     pub fn close(&mut self) -> Result<(), PrologError> {
         debug!("Closing MQI session...");
         let command = "close.";
-        if let Err(e) = send_message(&mut *self.stream, command) {
+        if let Err(e) = send_message(self.stream.as_mut(), command) {
             warn!("Error sending close command (connection might already be closed): {}", e);
             // Continue to shutdown socket anyway
         } else {
@@ -246,7 +245,7 @@ impl PrologSession {
     /// Internal function called by Server Drop to send quit.
     pub(crate) fn halt_server_internal(&mut self) -> Result<(), PrologError> {
         let command = "quit.";
-        send_message(&mut *self.stream, command)?;
+        send_message(self.stream.as_mut(), command)?;
         match self.handle_response()? {
              QueryResult::Success(true) => {
                 *self.connection_failed.lock().unwrap() = true; // Mark connection as intentionally down
@@ -258,7 +257,7 @@ impl PrologSession {
 
     /// Handles receiving and parsing a response from the MQI server.
     fn handle_response(&mut self) -> Result<QueryResult, PrologError> {
-        let response_str = receive_message(&mut *self.stream)?; // Can throw Io error
+        let response_str = receive_message(self.stream.as_mut())?; // Can throw Io error
         let response_json: Value = serde_json::from_str(&response_str)?; // Can throw Json error
         trace!("Received JSON: {}", response_json);
 
@@ -324,7 +323,7 @@ impl Drop for PrologSession {
 // --- Communication Helpers ---
 
 /// Sends a message according to the MQI protocol.
-fn send_message<W: Write>(stream: &mut W, message: &str) -> Result<(), PrologError> {
+fn send_message(stream: &mut dyn Write, message: &str) -> Result<(), PrologError> {
     let msg = message.trim_end_matches('.').to_string() + ".\n";
     trace!("Sending: {}", msg.trim_end());
     let msg_bytes = msg.as_bytes(); // MQI v1.0 uses UTF-8 byte length
@@ -337,7 +336,7 @@ fn send_message<W: Write>(stream: &mut W, message: &str) -> Result<(), PrologErr
 }
 
 /// Receives a message according to the MQI protocol.
-fn receive_message<R: Read>(stream: &mut R) -> Result<String, PrologError> {
+fn receive_message(stream: &mut dyn Read) -> Result<String, PrologError> {
     let mut size_buf = Vec::new();
     let mut byte_buf = [0u8; 1];
     let mut heartbeat_count = 0;
